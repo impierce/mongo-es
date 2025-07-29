@@ -1,0 +1,13 @@
+[package]
+name = "mongo-es"
+version = "0.1.0"
+authors = ["daniel-mader"]
+description = "A MongoDB implementation of the cqrs-es event store."
+edition = "2021"
+repository = "https://github.com/impierce/mongo-es"
+license = "Apache-2.0"
+keywords = ["cqrs"]
+
+[dependencies]
+cqrs-es = "0.4.12"
+mongodb = "3.2.4"
