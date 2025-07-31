@@ -18,10 +18,27 @@ impl From<serde_json::Error> for MongoAggregateError {
 
 impl From<mongodb::error::Error> for MongoAggregateError {
     fn from(error: mongodb::error::Error) -> Self {
-        match *error.kind {
+        match error.kind.as_ref() {
             mongodb::error::ErrorKind::BsonDeserialization(_) => {
                 MongoAggregateError::DeserializationError(Box::new(error))
             }
+            mongodb::error::ErrorKind::InsertMany(e) => {
+                if e.write_errors.iter().flatten().any(|err| err.code == 11000) {
+                    MongoAggregateError::OptimisticLock
+                } else {
+                    MongoAggregateError::UnknownError(Box::new(error))
+                }
+            }
+            mongodb::error::ErrorKind::Write(e) => match e {
+                mongodb::error::WriteFailure::WriteError(err) => {
+                    if err.code == 11000 {
+                        MongoAggregateError::OptimisticLock
+                    } else {
+                        MongoAggregateError::UnknownError(Box::new(error))
+                    }
+                }
+                _ => MongoAggregateError::UnknownError(Box::new(error)),
+            },
             _ => MongoAggregateError::UnknownError(Box::new(error)),
         }
     }

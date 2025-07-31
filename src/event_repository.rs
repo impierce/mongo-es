@@ -9,7 +9,8 @@ use cqrs_es::{
 use futures::StreamExt;
 use mongodb::{
     bson::{doc, Document},
-    Cursor,
+    options::IndexOptions,
+    Cursor, IndexModel,
 };
 use mongodb::{options::FindOptions, Client, Collection};
 use serde_json::Value;
@@ -59,10 +60,58 @@ impl MongoEventRepository {
         }
     }
 
+    async fn create_indexes(&self) -> mongodb::error::Result<()> {
+        let event_collection = self
+            .client
+            .database("my_db")
+            .collection::<Document>(&self.event_collection);
+
+        let index = IndexModel::builder()
+            .keys(doc! { "aggregate_id": 1, "sequence": 1 })
+            .options(
+                IndexOptions::builder()
+                    .unique(true)
+                    // .name("aggregate_id_sequence_unique".to_string())
+                    .build(),
+            )
+            .build();
+
+        event_collection.create_index(index).await?;
+
+        println!(
+            "Created compound index on `{}` collection",
+            self.event_collection
+        );
+
+        let snapshot_collection = self
+            .client
+            .database("my_db")
+            .collection::<Document>(&self.snapshot_collection);
+
+        let index = IndexModel::builder()
+            .keys(doc! { "aggregate_id": 1, "current_snapshot": -1 })
+            .options(
+                IndexOptions::builder()
+                    .unique(true)
+                    // .name("aggregate_id_current_snapshot_unique".to_string())
+                    .build(),
+            )
+            .build();
+
+        snapshot_collection.create_index(index).await?;
+
+        println!(
+            "Created compound index on `{}` collection",
+            self.snapshot_collection
+        );
+
+        Ok(())
+    }
+
     pub(crate) async fn insert_events(
         &self,
         events: &[SerializedEvent],
-    ) -> Result<(), PersistenceError> {
+    ) -> Result<(), MongoAggregateError> {
         if events.is_empty() {
             return Ok(());
         }
@@ -72,22 +121,9 @@ impl MongoEventRepository {
             .database("my_db")
             .collection(&self.event_collection);
 
-        let documents: Vec<Document> = events
-            .iter()
-            .map(|event| {
-                let mut doc = Document::new();
-                doc.insert("aggregate_id", event.aggregate_id.clone());
-                doc.insert("sequence", event.sequence.to_string());
-                doc.insert("aggregate_type", event.aggregate_type.clone());
-                doc.insert("event_type", event.event_type.clone());
-                doc.insert("event_version", event.event_version.clone());
-                doc.insert("payload", event.payload.to_string());
-                doc.insert("metadata", event.metadata.to_string());
-                doc
-            })
-            .collect();
+        let (documents, _) = Self::build_event_upsert_documents(events);
 
-        let res = collection.insert_many(documents).await.unwrap();
+        let res = collection.insert_many(documents).await?;
 
         println!(
             "Inserted {} events into `{}` collection",
@@ -98,22 +134,24 @@ impl MongoEventRepository {
         Ok(())
     }
 
-    /// Returns all events for the given aggregate type and id.
-    // async fn query_events(
-    //     &self,
-    //     aggregate_type: &str,
-    //     aggregate_id: &str,
-    // ) -> Result<Vec<SerializedEvent>, MongoAggregateError> {
-    //     let mut cursor = self
-    //         .query_collection(aggregate_type, aggregate_id, &self.event_collection, 0)
-    //         .await?;
-    //     let mut events: Vec<SerializedEvent> = Default::default();
-    //     while cursor.advance().await? {
-    //         let document = cursor.deserialize_current()?;
-    //         events.push(serialized_event(&document)?);
-    //     }
-    //     Ok(events)
-    // }
+    // helper: transforms serialized events into MongoDB documents
+    fn build_event_upsert_documents(events: &[SerializedEvent]) -> (Vec<Document>, usize) {
+        let mut current_sequence: usize = 0;
+        let mut documents: Vec<Document> = Vec::default();
+        for event in events {
+            current_sequence = event.sequence;
+            documents.push(doc! {
+                "aggregate_id": event.aggregate_id.clone(),
+                "aggregate_type": event.aggregate_type.clone(),
+                "sequence": event.sequence as i64,
+                "event_type": event.event_type.clone(),
+                "event_version": event.event_version.clone(),
+                "payload": event.payload.to_string(),
+                "metadata": event.metadata.to_string(),
+            });
+        }
+        (documents, current_sequence)
+    }
 
     /// Returns all events for the given aggregate type and id, starting from the specified sequence.
     async fn query_events(
@@ -128,6 +166,7 @@ impl MongoEventRepository {
                 aggregate_id,
                 &self.event_collection,
                 min_sequence as i64,
+                None,
             )
             .await?;
         let mut events: Vec<SerializedEvent> = Default::default();
@@ -145,21 +184,40 @@ impl MongoEventRepository {
         current_snapshot: usize,
         events: &[SerializedEvent],
     ) -> Result<(), MongoAggregateError> {
-        let expected_snapshot = current_snapshot - 1;
+        let (_, current_sequence) = Self::build_event_upsert_documents(events);
+        self.insert_events(events).await?;
 
         let collection: Collection<Document> = self
             .client
             .database("my_db")
             .collection(&self.snapshot_collection);
 
-        let mut doc = Document::new();
-        doc.insert("aggregate_id", &aggregate_id);
-        doc.insert("aggregate_type", A::aggregate_type());
-        doc.insert("payload", aggregate_payload.to_string());
-        doc.insert("current_sequence", 0);
-        doc.insert("current_snapshot", current_snapshot as i64);
+        let expected_snapshot = current_snapshot - 1;
 
-        let res = collection.insert_one(doc).await.unwrap();
+        let snapshot = doc! {
+            "aggregate_type": A::aggregate_type(),
+            "aggregate_id": &aggregate_id,
+            "payload": aggregate_payload.to_string(),
+            "current_sequence": current_sequence as i64,
+            "current_snapshot": current_snapshot as i64,
+        };
+
+        let filter = doc! {
+            "aggregate_id": &aggregate_id,
+            "aggregate_type": A::aggregate_type(),
+            "current_snapshot": expected_snapshot as i64,
+        };
+
+        // Replaces the snapshot entirely if it exists instead of patching it.
+        let res = collection
+            .replace_one(filter, snapshot)
+            .upsert(true)
+            .await
+            .map_err(MongoAggregateError::from)?;
+
+        if res.matched_count == 0 && res.upserted_id.is_none() {
+            return Err(MongoAggregateError::OptimisticLock);
+        }
 
         println!(
             "Inserted snapshot for `{}` with id `{}`",
@@ -177,13 +235,17 @@ impl MongoEventRepository {
         aggregate_id: &str,
         collection: &str,
         min_sequence: i64,
+        sort: Option<Document>,
     ) -> Result<Cursor<Document>, MongoAggregateError> {
         let filter = self.build_filter(aggregate_type, aggregate_id, min_sequence);
         let collection = self
             .client
             .database("my_db")
             .collection::<Document>(collection);
-        let cursor = collection.find(filter).await?;
+
+        let options = FindOptions::builder().sort(sort).build();
+
+        let cursor = collection.find(filter).with_options(options).await?;
         Ok(cursor)
     }
 
@@ -254,6 +316,7 @@ impl PersistedEventRepository for MongoEventRepository {
                 aggregate_id,
                 &self.snapshot_collection,
                 0,
+                Some(doc! { "current_snapshot": -1 }), // sort descending
             )
             .await?;
 
@@ -308,20 +371,20 @@ impl PersistedEventRepository for MongoEventRepository {
         &self,
         aggregate_id: &str,
     ) -> Result<ReplayStream, PersistenceError> {
-        Ok(ReplayStream::new(1).1)
+        Err(PersistenceError::UnknownError("Not yet implemented".into()))
     }
 
     // https://github.com/serverlesstechnology/postgres-es/blob/main/src/event_repository.rs#L99C5-L100C96
     // TODO: aggregate id is unused here, `stream_events` function needs to be broken up
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        Ok(ReplayStream::new(1).1)
+        Err(PersistenceError::UnknownError("Not yet implemented".into()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use cqrs_es::doc::{Customer, CustomerEvent};
-    use cqrs_es::persist::{PersistedEventRepository, SerializedEvent};
+    use cqrs_es::persist::{PersistedEventRepository, PersistenceError, SerializedEvent};
     use cqrs_es::{Aggregate, DomainEvent};
     use serde::{Deserialize, Serialize};
 
@@ -330,9 +393,13 @@ mod tests {
     use crate::MongoEventRepository;
 
     #[tokio::test]
-    async fn test_event_repository() {
+    async fn test_event_repository_inserts_successfully() {
         let client = mongodb_client().await;
         let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        repository
+            .create_indexes()
+            .await
+            .expect("Failed to create indexes");
         let aggregate_id = uuid::Uuid::new_v4().to_string();
         let events = repository
             .get_events::<Customer>(&aggregate_id)
@@ -368,27 +435,50 @@ mod tests {
         events
             .iter()
             .for_each(|e| assert_eq!(&aggregate_id, &e.aggregate_id));
+    }
+
+    #[tokio::test]
+    async fn test_event_repository_invalid_sequence_throws_error() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        repository
+            .create_indexes()
+            .await
+            .expect("Failed to create indexes");
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+
+        // Insert event
+        repository
+            .insert_events(&[test_event(
+                &aggregate_id,
+                1,
+                CustomerEvent::NameAdded {
+                    name: "Ferris".to_string(),
+                },
+            )])
+            .await
+            .unwrap();
 
         // Expect error when using invalid sequence
         let result = repository
             .insert_events(&[test_event(
                 &aggregate_id,
-                2,
+                1,
                 CustomerEvent::EmailUpdated {
-                    new_email: "foo@example.test".to_string(),
+                    new_email: "email@example.test".to_string(),
                 },
             )])
             .await
             .unwrap_err();
 
         match result {
-            MongoAggregateError => {}
+            MongoAggregateError::OptimisticLock => {}
             _ => panic!("Expected OptimisticLockError, got {:?}", result),
         }
     }
 
     #[tokio::test]
-    async fn test_snapshot_repository() {
+    async fn test_snapshot_repository_empty_returns_none() {
         let client = mongodb_client().await;
         let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
         let aggregate_id = uuid::Uuid::new_v4().to_string();
@@ -398,13 +488,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(None, snapshot);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_repository_inserts_successfully() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
 
         repository
             .update_snapshot::<Customer>(
                 serde_json::to_value(Customer {
-                    customer_id: "foo".to_string(),
-                    name: "bar".to_string(),
-                    email: "foo@example.test".to_string(),
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "email@example.test".to_string(),
                 })
                 .unwrap(),
                 aggregate_id.clone(),
@@ -418,13 +515,137 @@ mod tests {
             .get_snapshot::<Customer>(&aggregate_id)
             .await
             .unwrap();
+
         assert_eq!(
             Some(test_snapshot_context(
-                aggregate_id,
+                aggregate_id.clone(),
                 serde_json::to_value(Customer {
-                    customer_id: "foo".to_string(),
-                    name: "bar".to_string(),
-                    email: "".to_string(),
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "email@example.test".to_string(),
+                })
+                .unwrap(),
+                0,
+                1
+            )),
+            snapshot
+        );
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_repository_returns_latest_snapshot() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+
+        // First snapshot
+        repository
+            .update_snapshot::<Customer>(
+                serde_json::to_value(Customer {
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "first@example.test".to_string(),
+                })
+                .unwrap(),
+                aggregate_id.clone(),
+                1,
+                &vec![],
+            )
+            .await
+            .unwrap();
+
+        // Second snapshot
+        repository
+            .update_snapshot::<Customer>(
+                serde_json::to_value(Customer {
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "second@example.test".to_string(),
+                })
+                .unwrap(),
+                aggregate_id.clone(),
+                2,
+                &vec![],
+            )
+            .await
+            .unwrap();
+
+        let snapshot = repository
+            .get_snapshot::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            Some(test_snapshot_context(
+                aggregate_id.clone(),
+                serde_json::to_value(Customer {
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "second@example.test".to_string()
+                })
+                .unwrap(),
+                0,
+                2
+            )),
+            snapshot
+        );
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_repository_invalid_sequence_returns_error() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+
+        // First snapshot
+        repository
+            .update_snapshot::<Customer>(
+                serde_json::to_value(Customer {
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "first@example.test".to_string(),
+                })
+                .unwrap(),
+                aggregate_id.clone(),
+                1,
+                &vec![],
+            )
+            .await
+            .unwrap();
+
+        // Second snapshot, but with same sequence number
+        let result = repository
+            .update_snapshot::<Customer>(
+                serde_json::to_value(Customer {
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "second@example.test".to_string(),
+                })
+                .unwrap(),
+                aggregate_id.clone(),
+                1,
+                &vec![],
+            )
+            .await
+            .unwrap_err();
+
+        match result {
+            MongoAggregateError::OptimisticLock => {}
+            _ => panic!("Expected OptimisticLockError, got {:?}", result),
+        }
+
+        let snapshot = repository
+            .get_snapshot::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            Some(test_snapshot_context(
+                aggregate_id.clone(),
+                serde_json::to_value(Customer {
+                    customer_id: "123".to_string(),
+                    name: "Ferris".to_string(),
+                    email: "first@example.test".to_string()
                 })
                 .unwrap(),
                 0,
