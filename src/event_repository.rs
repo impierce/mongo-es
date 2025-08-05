@@ -60,11 +60,16 @@ impl MongoEventRepository {
         }
     }
 
+    // helper: get collection by name from default database
+    fn collection(&self, name: &str) -> Collection<Document> {
+        self.client
+            .default_database()
+            .expect("Default database not configured")
+            .collection::<Document>(name)
+    }
+
     async fn create_indexes(&self) -> mongodb::error::Result<()> {
-        let event_collection = self
-            .client
-            .database("my_db")
-            .collection::<Document>(&self.event_collection);
+        let event_collection = self.collection(&self.event_collection);
 
         let index = IndexModel::builder()
             .keys(doc! { "aggregate_id": 1, "sequence": 1 })
@@ -83,10 +88,7 @@ impl MongoEventRepository {
             self.event_collection
         );
 
-        let snapshot_collection = self
-            .client
-            .database("my_db")
-            .collection::<Document>(&self.snapshot_collection);
+        let snapshot_collection = self.collection(&self.snapshot_collection);
 
         let index = IndexModel::builder()
             .keys(doc! { "aggregate_id": 1, "current_snapshot": -1 })
@@ -116,10 +118,7 @@ impl MongoEventRepository {
             return Ok(());
         }
 
-        let collection: Collection<Document> = self
-            .client
-            .database("my_db")
-            .collection(&self.event_collection);
+        let collection: Collection<Document> = self.collection(&self.event_collection);
 
         let (documents, _) = Self::build_event_upsert_documents(events);
 
@@ -187,10 +186,7 @@ impl MongoEventRepository {
         let (_, current_sequence) = Self::build_event_upsert_documents(events);
         self.insert_events(events).await?;
 
-        let collection: Collection<Document> = self
-            .client
-            .database("my_db")
-            .collection(&self.snapshot_collection);
+        let collection: Collection<Document> = self.collection(&self.snapshot_collection);
 
         let expected_snapshot = current_snapshot - 1;
 
@@ -238,10 +234,7 @@ impl MongoEventRepository {
         sort: Option<Document>,
     ) -> Result<Cursor<Document>, MongoAggregateError> {
         let filter = self.build_filter(aggregate_type, aggregate_id, min_sequence);
-        let collection = self
-            .client
-            .database("my_db")
-            .collection::<Document>(collection);
+        let collection = self.collection(collection);
 
         let options = FindOptions::builder().sort(sort).build();
 
@@ -384,9 +377,7 @@ impl PersistedEventRepository for MongoEventRepository {
 #[cfg(test)]
 mod tests {
     use cqrs_es::doc::{Customer, CustomerEvent};
-    use cqrs_es::persist::{PersistedEventRepository, PersistenceError, SerializedEvent};
-    use cqrs_es::{Aggregate, DomainEvent};
-    use serde::{Deserialize, Serialize};
+    use cqrs_es::persist::PersistedEventRepository;
 
     use crate::error::MongoAggregateError;
     use crate::test_utils::tests::{mongodb_client, test_event, test_snapshot_context};

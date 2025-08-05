@@ -72,7 +72,8 @@ where
     async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {
         let collection = self
             .client
-            .database("my_db")
+            .default_database()
+            .expect("Default database not configured")
             .collection::<Document>(&self.view_name);
 
         let view_id = context.view_instance_id;
@@ -91,7 +92,10 @@ where
             .await
             .expect("Failed to update view");
 
-        println!("Updated {} documents", res.modified_count);
+        println!(
+            "Modified {} documents in `{}` collection",
+            res.modified_count, &self.view_name
+        );
 
         Ok(())
     }
@@ -105,7 +109,8 @@ async fn load_view(
     view_id: &str,
 ) -> Result<Collection<Document>, MongoAggregateError> {
     let collection = client
-        .database("my_db")
+        .default_database()
+        .expect("Default database not configured")
         .collection::<Document>(collection_name);
     Ok(collection)
 }
