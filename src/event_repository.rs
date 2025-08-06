@@ -265,14 +265,21 @@ impl MongoEventRepository {
 
 fn serialized_event(document: &Document) -> Result<SerializedEvent, MongoAggregateError> {
     let aggregate_id = document.get_str("aggregate_id")?.to_string();
+    let sequence = document.get_i64("sequence")? as usize;
+    let aggregate_type = document.get_str("aggregate_type")?.to_string();
+    let event_type = document.get_str("event_type")?.to_string();
+    let event_version = document.get_str("event_version")?.to_string();
+    let payload: Value = serde_json::from_str(document.get_str("payload")?)?;
+    let metadata: Value = serde_json::from_str(document.get_str("metadata")?)?;
+
     Ok(SerializedEvent {
         aggregate_id,
-        sequence: 0,
-        aggregate_type: "".to_string(),
-        event_type: "".to_string(),
-        event_version: "1".to_string(),
-        payload: serde_json::json!({}),
-        metadata: serde_json::json!({}),
+        sequence,
+        aggregate_type,
+        event_type,
+        event_version,
+        payload,
+        metadata,
     })
 }
 
