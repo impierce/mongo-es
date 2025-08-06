@@ -8,7 +8,7 @@ use cqrs_es::{
 };
 use futures::StreamExt;
 use mongodb::{
-    bson::{doc, Document},
+    bson::{self, doc, Document},
     options::IndexOptions,
     Cursor, IndexModel,
 };
@@ -145,8 +145,8 @@ impl MongoEventRepository {
                 "sequence": event.sequence as i64,
                 "event_type": event.event_type.clone(),
                 "event_version": event.event_version.clone(),
-                "payload": event.payload.to_string(),
-                "metadata": event.metadata.to_string(),
+                "payload": bson::to_bson(&event.payload).unwrap(),
+                "metadata": bson::to_bson(&event.metadata).unwrap(),
             });
         }
         (documents, current_sequence)
@@ -269,8 +269,8 @@ fn serialized_event(document: &Document) -> Result<SerializedEvent, MongoAggrega
     let aggregate_type = document.get_str("aggregate_type")?.to_string();
     let event_type = document.get_str("event_type")?.to_string();
     let event_version = document.get_str("event_version")?.to_string();
-    let payload: Value = serde_json::from_str(document.get_str("payload")?)?;
-    let metadata: Value = serde_json::from_str(document.get_str("metadata")?)?;
+    let payload = bson::from_bson(document.get("payload").unwrap().clone()).unwrap();
+    let metadata = bson::from_bson(document.get("metadata").unwrap().clone()).unwrap();
 
     Ok(SerializedEvent {
         aggregate_id,
@@ -322,9 +322,7 @@ impl PersistedEventRepository for MongoEventRepository {
 
         if let Some(result) = cursor.next().await {
             let document = result.map_err(MongoAggregateError::from)?;
-            let payload = document
-                .get_str("payload")
-                .map_err(MongoAggregateError::from)?;
+            let payload = bson::from_bson(document.get("payload").unwrap().clone()).unwrap();
             println!(
                 "Found snapshot for `{}` with id `{}`",
                 A::aggregate_type(),
@@ -332,7 +330,7 @@ impl PersistedEventRepository for MongoEventRepository {
             );
             Ok(Some(SerializedSnapshot {
                 aggregate_id: aggregate_id.to_string(),
-                aggregate: serde_json::from_str(payload)?,
+                aggregate: payload,
                 current_sequence: document
                     .get_i64("current_sequence")
                     .map_err(MongoAggregateError::from)? as usize,

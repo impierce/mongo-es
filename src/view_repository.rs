@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use cqrs_es::persist::{PersistenceError, ViewContext, ViewRepository};
 use cqrs_es::{Aggregate, View};
-use mongodb::bson::{doc, Document};
+use mongodb::bson::{self, doc, Document};
 use mongodb::{Client, Collection};
 
 use crate::error::MongoAggregateError;
@@ -38,12 +38,12 @@ where
             .find_one(doc! { "view_id": view_id })
             .await
             .unwrap();
-        let doc = match result {
+        let document = match result {
             Some(item) => item,
             None => return Ok(None),
         };
 
-        let payload = serde_json::from_str(doc.get_str("payload").unwrap()).unwrap();
+        let payload = bson::from_bson(document.get("payload").unwrap().clone()).unwrap();
         let view: V = serde_json::from_value(payload)?;
         Ok(Some(view))
     }
@@ -57,13 +57,13 @@ where
             .find_one(doc! { "view_id": view_id })
             .await
             .unwrap();
-        let doc = match result {
+        let document = match result {
             Some(item) => item,
             None => return Ok(None),
         };
 
-        let version = doc.get_i64("version").unwrap_or(0);
-        let payload = serde_json::from_str(doc.get_str("payload").unwrap()).unwrap();
+        let version = document.get_i64("version").unwrap_or(0);
+        let payload = bson::from_bson(document.get("payload").unwrap().clone()).unwrap();
         let view: V = serde_json::from_value(payload)?;
         let context = ViewContext::new(view_id.to_string(), version);
         Ok(Some((view, context)))
@@ -81,7 +81,7 @@ where
         let filter = doc! { "view_id": &view_id };
         let update = doc! {
             "$set": {
-                "payload": serde_json::to_string(&view).unwrap(), // to_vec, blob?
+                "payload": bson::to_bson(&view).unwrap(),
                 "version": context.version + 1,
             }
         };
