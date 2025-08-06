@@ -44,7 +44,7 @@ pub(crate) mod tests {
     }
 
     pub async fn mongodb_client() -> mongodb::Client {
-        mongodb::Client::with_uri_str("mongodb://localhost:27017")
+        mongodb::Client::with_uri_str("mongodb://localhost:27017/test")
             .await
             .unwrap()
     }
