@@ -30,12 +30,14 @@ pub struct MongoEventRepository {
 }
 
 impl MongoEventRepository {
-    pub fn new(client: Client) -> Self {
-        Self::use_collection_names(
+    pub async fn new(client: Client) -> mongodb::error::Result<Self> {
+        let repository = Self::use_collection_names(
             client,
             DEFAULT_EVENT_COLLECTION,
             DEFAULT_SNAPSHOT_COLLECTION,
-        )
+        );
+        repository.create_indexes().await?;
+        Ok(repository)
     }
 
     pub fn with_streaming_channel_size(self, stream_channel_size: usize) -> Self {
@@ -369,14 +371,28 @@ impl PersistedEventRepository for MongoEventRepository {
         &self,
         aggregate_id: &str,
     ) -> Result<ReplayStream, PersistenceError> {
-        Err(PersistenceError::UnknownError("Not yet implemented".into()))
+        let query = self
+            .query_collection(
+                &A::aggregate_type(),
+                aggregate_id,
+                &self.event_collection,
+                0,
+                None,
+            )
+            .await?;
+        Ok(stream_events(query, self.stream_channel_size))
     }
 
     // https://github.com/serverlesstechnology/postgres-es/blob/main/src/event_repository.rs#L99C5-L100C96
     // TODO: aggregate id is unused here, `stream_events` function needs to be broken up
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        Err(PersistenceError::UnknownError("Not yet implemented".into()))
+        todo!()
     }
+}
+
+fn stream_events(_base_query: Cursor<Document>, channel_size: usize) -> ReplayStream {
+    let (mut _feed, stream) = ReplayStream::new(channel_size);
+    stream
 }
 
 #[cfg(test)]
@@ -391,11 +407,10 @@ mod tests {
     #[tokio::test]
     async fn test_event_repository_inserts_successfully() {
         let client = mongodb_client().await;
-        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
-        repository
-            .create_indexes()
+        let repository = MongoEventRepository::new(client)
             .await
-            .expect("Failed to create indexes");
+            .unwrap()
+            .with_streaming_channel_size(1);
         let aggregate_id = uuid::Uuid::new_v4().to_string();
         let events = repository
             .get_events::<Customer>(&aggregate_id)
@@ -436,11 +451,10 @@ mod tests {
     #[tokio::test]
     async fn test_event_repository_invalid_sequence_throws_error() {
         let client = mongodb_client().await;
-        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
-        repository
-            .create_indexes()
+        let repository = MongoEventRepository::new(client)
             .await
-            .expect("Failed to create indexes");
+            .unwrap()
+            .with_streaming_channel_size(1);
         let aggregate_id = uuid::Uuid::new_v4().to_string();
 
         // Insert event
@@ -476,7 +490,10 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_repository_empty_returns_none() {
         let client = mongodb_client().await;
-        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1);
         let aggregate_id = uuid::Uuid::new_v4().to_string();
 
         let snapshot = repository
@@ -489,7 +506,10 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_repository_inserts_successfully() {
         let client = mongodb_client().await;
-        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1);
         let aggregate_id = uuid::Uuid::new_v4().to_string();
 
         repository
@@ -531,7 +551,10 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_repository_returns_latest_snapshot() {
         let client = mongodb_client().await;
-        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1);
         let aggregate_id = uuid::Uuid::new_v4().to_string();
 
         // First snapshot
@@ -590,7 +613,10 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_repository_invalid_sequence_returns_error() {
         let client = mongodb_client().await;
-        let repository = MongoEventRepository::new(client).with_streaming_channel_size(1);
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1);
         let aggregate_id = uuid::Uuid::new_v4().to_string();
 
         // First snapshot

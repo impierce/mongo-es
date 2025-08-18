@@ -5,25 +5,23 @@ use mongo_es::MongoEventRepository;
 
 use testcontainers_modules::{mongo, testcontainers::runners::AsyncRunner};
 
-const LOCAL_CONNECTION_STRING: &str = "mongodb://localhost:27017";
-
 #[tokio::test]
-async fn test_with_mongodb() {
+async fn test_with_mongodb_container() {
     let container = mongo::Mongo::default().start().await.unwrap();
     let host_ip = container.get_host().await.unwrap();
     let host_port = container.get_host_port_ipv4(27017).await.unwrap();
 
-    let connection_string = &format!("mongodb://{}:{}/test", host_ip, host_port);
+    let connection_string = &format!("mongodb://{host_ip}:{host_port}/test");
 
     let client = mongodb::Client::with_uri_str(connection_string)
         .await
         .expect("Failed to create MongoDB client");
 
-    let repository = MongoEventRepository::new(client);
+    let repository = MongoEventRepository::new(client).await.unwrap();
 
     let store = PersistedEventStore::<MongoEventRepository, Customer>::new_event_store(repository);
 
-    let cqrs = CqrsFramework::new(store, vec![], CustomerService::default());
+    let cqrs = CqrsFramework::new(store, vec![], CustomerService);
 
     const AGGREGATE_ID: &str = "1";
 

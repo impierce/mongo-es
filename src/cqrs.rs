@@ -8,7 +8,7 @@ pub async fn default_mongo_client(connection_string: &str) -> mongodb::Client {
         .expect("Failed to create MongoDB client")
 }
 
-pub fn mongo_cqrs<A>(
+pub async fn mongo_cqrs<A>(
     client: mongodb::Client,
     query_processor: Vec<Box<dyn Query<A>>>,
     services: A::Services,
@@ -16,7 +16,7 @@ pub fn mongo_cqrs<A>(
 where
     A: Aggregate,
 {
-    let repository = MongoEventRepository::new(client);
+    let repository = MongoEventRepository::new(client).await.unwrap();
     let store = PersistedEventStore::new_event_store(repository);
     CqrsFramework::new(store, query_processor, services)
 }
