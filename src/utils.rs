@@ -1,3 +1,25 @@
+use mongodb::{
+    bson::{doc, Document},
+    Client,
+};
+
+use crate::error::MongoAggregateError;
+
+pub(crate) async fn load_view(
+    client: &Client,
+    collection_name: &str,
+    view_id: &str,
+) -> Result<Option<Document>, MongoAggregateError> {
+    let collection = client
+        .default_database()
+        .expect("Default database not configured")
+        .collection::<Document>(collection_name);
+    Ok(collection
+        .find_one(doc! { "view_id": view_id })
+        .await
+        .unwrap())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use cqrs_es::doc::{Customer, CustomerEvent};

@@ -2,9 +2,8 @@ use async_trait::async_trait;
 use cqrs_es::persist::{PersistenceError, ViewContext, ViewRepository};
 use cqrs_es::{Aggregate, View};
 use mongodb::bson::{self, doc, Document};
-use mongodb::{Client, Collection};
 
-use crate::error::MongoAggregateError;
+use crate::utils::load_view;
 
 pub struct MongoViewRepository<V, A> {
     _phantom: std::marker::PhantomData<(V, A)>,
@@ -33,11 +32,7 @@ where
     A: Aggregate,
 {
     async fn load(&self, view_id: &str) -> Result<Option<V>, PersistenceError> {
-        let collection = load_view(&self.client, &self.view_name, view_id).await?;
-        let result = collection
-            .find_one(doc! { "view_id": view_id })
-            .await
-            .unwrap();
+        let result = load_view(&self.client, &self.view_name, view_id).await?;
         let document = match result {
             Some(item) => item,
             None => return Ok(None),
@@ -52,11 +47,7 @@ where
         &self,
         view_id: &str,
     ) -> Result<Option<(V, ViewContext)>, PersistenceError> {
-        let collection = load_view(&self.client, &self.view_name, view_id).await?;
-        let result = collection
-            .find_one(doc! { "view_id": view_id })
-            .await
-            .unwrap();
+        let result = load_view(&self.client, &self.view_name, view_id).await?;
         let document = match result {
             Some(item) => item,
             None => return Ok(None),
@@ -101,20 +92,6 @@ where
     }
 }
 
-// helper function
-// TODO: move to `utils.rs`
-async fn load_view(
-    client: &Client,
-    collection_name: &str,
-    view_id: &str,
-) -> Result<Collection<Document>, MongoAggregateError> {
-    let collection = client
-        .default_database()
-        .expect("Default database not configured")
-        .collection::<Document>(collection_name);
-    Ok(collection)
-}
-
 #[cfg(test)]
 mod tests {
     use cqrs_es::doc::{Customer, CustomerEvent};
@@ -141,11 +118,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (found, context) = repository
-            .load_with_context(&test_view_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let found = repository.load(&test_view_id).await.unwrap().unwrap();
 
         assert_eq!(found, view);
     }
