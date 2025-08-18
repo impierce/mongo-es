@@ -502,7 +502,7 @@ mod tests {
                 .unwrap(),
                 aggregate_id.clone(),
                 1,
-                &vec![],
+                &[],
             )
             .await
             .unwrap();
@@ -545,7 +545,7 @@ mod tests {
                 .unwrap(),
                 aggregate_id.clone(),
                 1,
-                &vec![],
+                &[],
             )
             .await
             .unwrap();
@@ -561,7 +561,7 @@ mod tests {
                 .unwrap(),
                 aggregate_id.clone(),
                 2,
-                &vec![],
+                &[],
             )
             .await
             .unwrap();
@@ -604,7 +604,7 @@ mod tests {
                 .unwrap(),
                 aggregate_id.clone(),
                 1,
-                &vec![],
+                &[],
             )
             .await
             .unwrap();
@@ -620,7 +620,7 @@ mod tests {
                 .unwrap(),
                 aggregate_id.clone(),
                 1,
-                &vec![],
+                &[],
             )
             .await
             .unwrap_err();
