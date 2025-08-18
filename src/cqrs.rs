@@ -26,12 +26,20 @@ mod tests {
     use std::sync::Arc;
 
     use crate::cqrs::mongo_cqrs;
-    use crate::test_utils::tests::mongodb_client;
+    use crate::test_utils::tests::{mongodb_client, CustomerView};
     use crate::MongoViewRepository;
+    use cqrs_es::doc::{Customer, CustomerService};
+    use cqrs_es::persist::GenericQuery;
+
+    type TestQueryRepository =
+        GenericQuery<MongoViewRepository<CustomerView, Customer>, CustomerView, Customer>;
 
     #[tokio::test]
     async fn test_cqrs_framework() {
         let client = mongodb_client().await;
-        // let view_repository = MongoViewRepository::new("test_query", client.clone());
+        let view_repository =
+            MongoViewRepository::<CustomerView, Customer>::new("test_view", client.clone());
+        let query = TestQueryRepository::new(Arc::new(view_repository));
+        let _cqrs = mongo_cqrs(client, vec![Box::new(query)], CustomerService);
     }
 }
