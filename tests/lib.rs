@@ -13,7 +13,7 @@ async fn test_with_mongodb() {
     let host_ip = container.get_host().await.unwrap();
     let host_port = container.get_host_port_ipv4(27017).await.unwrap();
 
-    let connection_string = &format!("mongodb://{}:{}", host_ip, host_port);
+    let connection_string = &format!("mongodb://{}:{}/test", host_ip, host_port);
 
     let client = mongodb::Client::with_uri_str(connection_string)
         .await
