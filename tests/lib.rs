@@ -1,7 +1,7 @@
 use cqrs_es::doc::{Customer, CustomerCommand, CustomerService};
 use cqrs_es::persist::PersistedEventStore;
 use cqrs_es::CqrsFramework;
-use mongo_es::MongoEventRepository;
+use mongo_es::{default_mongo_client, MongoEventRepository};
 
 use testcontainers_modules::{mongo, testcontainers::runners::AsyncRunner};
 
@@ -13,9 +13,7 @@ async fn test_with_mongodb_container() {
 
     let connection_string = &format!("mongodb://{host_ip}:{host_port}/test");
 
-    let client = mongodb::Client::with_uri_str(connection_string)
-        .await
-        .expect("Failed to create MongoDB client");
+    let client = default_mongo_client(connection_string).await;
 
     let repository = MongoEventRepository::new(client).await.unwrap();
 
