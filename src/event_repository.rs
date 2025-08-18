@@ -249,16 +249,16 @@ impl MongoEventRepository {
         min_sequence: i64,
     ) -> Document {
         if min_sequence == 0 {
-            return doc! {
+            doc! {
                 "aggregate_type": aggregate_type,
                 "aggregate_id": aggregate_id,
-            };
+            }
         } else {
-            return doc! {
+            doc! {
                 "aggregate_type": aggregate_type,
                 "aggregate_id": aggregate_id,
                 "sequence": { "$gte": min_sequence },
-            };
+            }
         }
     }
 }
@@ -469,7 +469,7 @@ mod tests {
 
         match result {
             MongoAggregateError::OptimisticLock => {}
-            _ => panic!("Expected OptimisticLockError, got {:?}", result),
+            _ => panic!("Expected OptimisticLockError, got {result:?}"),
         }
     }
 
@@ -627,7 +627,7 @@ mod tests {
 
         match result {
             MongoAggregateError::OptimisticLock => {}
-            _ => panic!("Expected OptimisticLockError, got {:?}", result),
+            _ => panic!("Expected OptimisticLockError, got {result:?}"),
         }
 
         let snapshot = repository
