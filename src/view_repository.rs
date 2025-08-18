@@ -120,7 +120,7 @@ mod tests {
     use cqrs_es::doc::{Customer, CustomerEvent};
     use cqrs_es::persist::{ViewContext, ViewRepository};
 
-    use crate::test_utils::tests::{mongodb_client, CustomerView};
+    use crate::utils::tests::{mongodb_client, CustomerView};
     use crate::MongoViewRepository;
 
     #[tokio::test]
