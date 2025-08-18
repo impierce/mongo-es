@@ -29,16 +29,11 @@ impl From<mongodb::error::Error> for MongoAggregateError {
                     MongoAggregateError::UnknownError(Box::new(error))
                 }
             }
-            mongodb::error::ErrorKind::Write(e) => match e {
-                mongodb::error::WriteFailure::WriteError(err) => {
-                    if err.code == 11000 {
-                        MongoAggregateError::OptimisticLock
-                    } else {
-                        MongoAggregateError::UnknownError(Box::new(error))
-                    }
-                }
-                _ => MongoAggregateError::UnknownError(Box::new(error)),
-            },
+            mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(err))
+                if err.code == 11000 =>
+            {
+                MongoAggregateError::OptimisticLock
+            }
             _ => MongoAggregateError::UnknownError(Box::new(error)),
         }
     }
