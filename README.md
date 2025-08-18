@@ -14,5 +14,5 @@ Add the following to your `Cargo.toml`:
 ```toml
 [dependencies]
 cqrs-es = "0.4.12"
-mongo-es = "0.1.0"
+mongo-es = "0.2.0"
 ```
