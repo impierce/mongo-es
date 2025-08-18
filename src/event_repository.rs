@@ -193,7 +193,7 @@ impl MongoEventRepository {
         let snapshot = doc! {
             "aggregate_type": A::aggregate_type(),
             "aggregate_id": &aggregate_id,
-            "payload": aggregate_payload.to_string(),
+            "payload": bson::to_bson(&aggregate_payload).unwrap(),
             "current_sequence": current_sequence as i64,
             "current_snapshot": current_snapshot as i64,
         };
