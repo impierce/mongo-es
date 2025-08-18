@@ -26,7 +26,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::cqrs::mongo_cqrs;
-    use crate::test_utils::tests::{mongodb_client, CustomerView};
+    use crate::utils::tests::{mongodb_client, CustomerView};
     use crate::MongoViewRepository;
     use cqrs_es::doc::{Customer, CustomerService};
     use cqrs_es::persist::GenericQuery;

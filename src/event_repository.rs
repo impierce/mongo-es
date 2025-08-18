@@ -385,7 +385,7 @@ mod tests {
     use cqrs_es::persist::PersistedEventRepository;
 
     use crate::error::MongoAggregateError;
-    use crate::test_utils::tests::{mongodb_client, test_event, test_snapshot_context};
+    use crate::utils::tests::{mongodb_client, test_event, test_snapshot_context};
     use crate::MongoEventRepository;
 
     #[tokio::test]

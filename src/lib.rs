@@ -6,6 +6,6 @@ pub use crate::view_repository::*;
 mod cqrs;
 mod error;
 mod event_repository;
-mod test_utils;
 mod types;
+mod utils;
 mod view_repository;
