@@ -6,7 +6,7 @@ description = "A MongoDB implementation of the cqrs-es event store."
 edition = "2021"
 repository = "https://github.com/impierce/mongo-es"
 license = "Apache-2.0"
-keywords = ["cqrs"]
+keywords = ["cqrs", "event-sourcing", "mongodb", "cqrs-es"]
 
 [dependencies]
 cqrs-es = "0.4.12"
