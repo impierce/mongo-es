@@ -83,9 +83,10 @@ where
             .await
             .expect("Failed to update view");
 
-        println!(
+        log::debug!(
             "Modified {} documents in `{}` collection",
-            res.modified_count, &self.view_name
+            res.modified_count,
+            &self.view_name
         );
 
         Ok(())

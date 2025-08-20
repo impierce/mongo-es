@@ -20,8 +20,9 @@ use crate::error::MongoAggregateError;
 const DEFAULT_EVENT_COLLECTION: &str = "events";
 const DEFAULT_SNAPSHOT_COLLECTION: &str = "snapshots";
 
-const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 100;
+const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 200;
 
+/// An event repository using MongoDB for persistence.
 pub struct MongoEventRepository {
     client: Client,
     event_collection: String,
@@ -30,16 +31,36 @@ pub struct MongoEventRepository {
 }
 
 impl MongoEventRepository {
+    /// Creates a new `MongoEventRepository` with the default collection names and default streaming channel size.
     pub async fn new(client: Client) -> mongodb::error::Result<Self> {
-        let repository = Self::use_collection_names(
+        let repository = Self {
             client,
-            DEFAULT_EVENT_COLLECTION,
-            DEFAULT_SNAPSHOT_COLLECTION,
-        );
+            event_collection: DEFAULT_EVENT_COLLECTION.to_string(),
+            snapshot_collection: DEFAULT_SNAPSHOT_COLLECTION.to_string(),
+            stream_channel_size: DEFAULT_STREAMING_CHANNEL_SIZE,
+        };
+        // TODO: is this the right place to create indexes?
         repository.create_indexes().await?;
         Ok(repository)
     }
 
+    /// Configures a `MongoEventRepository` to use custom collection names.
+    ///
+    /// Defaults:
+    /// - `event_collection`: "events"
+    /// - `snapshot_collection`: "snapshots"
+    pub fn with_collection_names(self, event_collection: &str, snapshot_collection: &str) -> Self {
+        Self {
+            client: self.client,
+            event_collection: event_collection.to_string(),
+            snapshot_collection: snapshot_collection.to_string(),
+            stream_channel_size: self.stream_channel_size,
+        }
+    }
+
+    /// Configures a `MongoEventRepository` to use a custom streaming channel size.
+    ///
+    /// Default: `200`
     pub fn with_streaming_channel_size(self, stream_channel_size: usize) -> Self {
         Self {
             client: self.client,
@@ -49,29 +70,17 @@ impl MongoEventRepository {
         }
     }
 
-    fn use_collection_names(
-        client: Client,
-        event_collection: &str,
-        snapshot_collection: &str,
-    ) -> Self {
-        Self {
-            client,
-            event_collection: event_collection.to_string(),
-            snapshot_collection: snapshot_collection.to_string(),
-            stream_channel_size: DEFAULT_STREAMING_CHANNEL_SIZE,
-        }
-    }
-
     // helper: get collection by name from default database
-    fn collection(&self, name: &str) -> Collection<Document> {
+    fn get_collection(&self, name: &str) -> Collection<Document> {
         self.client
             .default_database()
             .expect("Default database not configured")
             .collection::<Document>(name)
     }
 
+    /// Creates indexes for the event and snapshot collections to ensure uniqueness.
     async fn create_indexes(&self) -> mongodb::error::Result<()> {
-        let event_collection = self.collection(&self.event_collection);
+        let event_collection = self.get_collection(&self.event_collection);
 
         let index = IndexModel::builder()
             .keys(doc! { "aggregate_id": 1, "sequence": 1 })
@@ -85,12 +94,12 @@ impl MongoEventRepository {
 
         event_collection.create_index(index).await?;
 
-        println!(
+        log::debug!(
             "Created compound index on `{}` collection",
             self.event_collection
         );
 
-        let snapshot_collection = self.collection(&self.snapshot_collection);
+        let snapshot_collection = self.get_collection(&self.snapshot_collection);
 
         let index = IndexModel::builder()
             .keys(doc! { "aggregate_id": 1, "current_snapshot": -1 })
@@ -104,7 +113,7 @@ impl MongoEventRepository {
 
         snapshot_collection.create_index(index).await?;
 
-        println!(
+        log::debug!(
             "Created compound index on `{}` collection",
             self.snapshot_collection
         );
@@ -120,13 +129,14 @@ impl MongoEventRepository {
             return Ok(());
         }
 
-        let collection: Collection<Document> = self.collection(&self.event_collection);
+        let collection: Collection<Document> = self.get_collection(&self.event_collection);
 
         let (documents, _) = Self::build_event_upsert_documents(events);
 
+        // TODO: should a session be used to ensure an atomic write?
         let res = collection.insert_many(documents).await?;
 
-        println!(
+        log::debug!(
             "Inserted {} events into `{}` collection",
             res.inserted_ids.len(),
             self.event_collection
@@ -188,7 +198,7 @@ impl MongoEventRepository {
         let (_, current_sequence) = Self::build_event_upsert_documents(events);
         self.insert_events(events).await?;
 
-        let collection: Collection<Document> = self.collection(&self.snapshot_collection);
+        let collection: Collection<Document> = self.get_collection(&self.snapshot_collection);
 
         let expected_snapshot = current_snapshot - 1;
 
@@ -217,7 +227,7 @@ impl MongoEventRepository {
             return Err(MongoAggregateError::OptimisticLock);
         }
 
-        println!(
+        log::debug!(
             "Inserted snapshot for `{}` with id `{}`",
             A::aggregate_type(),
             &aggregate_id
@@ -236,11 +246,12 @@ impl MongoEventRepository {
         sort: Option<Document>,
     ) -> Result<Cursor<Document>, MongoAggregateError> {
         let filter = self.build_filter(aggregate_type, aggregate_id, min_sequence);
-        let collection = self.collection(collection);
-
         let options = FindOptions::builder().sort(sort).build();
-
-        let cursor = collection.find(filter).with_options(options).await?;
+        let cursor = self
+            .get_collection(collection)
+            .find(filter)
+            .with_options(options)
+            .await?;
         Ok(cursor)
     }
 
@@ -325,7 +336,7 @@ impl PersistedEventRepository for MongoEventRepository {
         if let Some(result) = cursor.next().await {
             let document = result.map_err(MongoAggregateError::from)?;
             let payload = bson::from_bson(document.get("payload").unwrap().clone()).unwrap();
-            println!(
+            log::debug!(
                 "Found snapshot for `{}` with id `{}`",
                 A::aggregate_type(),
                 aggregate_id
