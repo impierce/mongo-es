@@ -288,8 +288,8 @@ fn serialized_event(document: &Document) -> Result<SerializedEvent, MongoAggrega
     let aggregate_type = document.get_str("aggregate_type")?.to_string();
     let event_type = document.get_str("event_type")?.to_string();
     let event_version = document.get_str("event_version")?.to_string();
-    let payload = bson::from_bson(document.get("payload").unwrap().clone()).unwrap();
-    let metadata = bson::from_bson(document.get("metadata").unwrap().clone()).unwrap();
+    let payload = bson::from_bson(document.get("payload").into())?;
+    let metadata = bson::from_bson(document.get("metadata").into())?;
 
     Ok(SerializedEvent {
         aggregate_id,
@@ -400,8 +400,6 @@ impl PersistedEventRepository for MongoEventRepository {
         Ok(stream_events(query, self.stream_channel_size))
     }
 
-    // https://github.com/serverlesstechnology/postgres-es/blob/main/src/event_repository.rs#L99C5-L100C96
-    // TODO: aggregate id is unused here, `stream_events` function needs to be broken up
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
         let filter = doc! { "aggregate_type": A::aggregate_type() };
         let options = FindOptions::builder().sort(doc! { "sequence": 1 }).build();
