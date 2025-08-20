@@ -133,8 +133,14 @@ impl MongoEventRepository {
 
         let (documents, _) = Self::build_event_upsert_documents(events);
 
-        // TODO: should a session be used to ensure an atomic write?
-        let res = collection.insert_many(documents).await?;
+        // Running transactions in a session ensures atomicity.
+        let mut session = self.client.start_session().await?;
+        session.start_transaction().await?;
+        let res = collection
+            .insert_many(documents)
+            .session(&mut session)
+            .await?;
+        session.commit_transaction().await?;
 
         log::debug!(
             "Inserted {} events into `{}` collection",
@@ -460,6 +466,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_event_repository_get_last_events() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+        let events = repository
+            .get_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        assert!(events.is_empty());
+
+        // Insert events
+        repository
+            .insert_events(&[
+                test_event(
+                    &aggregate_id,
+                    1,
+                    CustomerEvent::NameAdded {
+                        name: "Ferris".to_string(),
+                    },
+                ),
+                test_event(
+                    &aggregate_id,
+                    3,
+                    CustomerEvent::EmailUpdated {
+                        new_email: "second@example.test".to_string(),
+                    },
+                ),
+                test_event(
+                    &aggregate_id,
+                    2,
+                    CustomerEvent::EmailUpdated {
+                        new_email: "first@example.test".to_string(),
+                    },
+                ),
+                test_event(
+                    &aggregate_id,
+                    4,
+                    CustomerEvent::NameAdded {
+                        name: "F3rr1s".to_string(),
+                    },
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let events = repository
+            .get_last_events::<Customer>(&aggregate_id, 3)
+            .await
+            .unwrap();
+        assert_eq!(2, events.len());
+        assert_eq!(3, events[0].sequence);
+        assert_eq!(4, events[1].sequence);
+    }
+
+    #[tokio::test]
     async fn test_event_repository_invalid_sequence_throws_error() {
         let client = mongodb_client().await;
         let repository = MongoEventRepository::new(client)
@@ -473,22 +537,31 @@ mod tests {
             .insert_events(&[test_event(
                 &aggregate_id,
                 1,
-                CustomerEvent::NameAdded {
-                    name: "Ferris".to_string(),
+                CustomerEvent::EmailUpdated {
+                    new_email: "first@example.test".to_string(),
                 },
             )])
             .await
             .unwrap();
 
-        // Expect error when using invalid sequence
+        // Transaction should fail if any of the events has invalid sequence number
         let result = repository
-            .insert_events(&[test_event(
-                &aggregate_id,
-                1,
-                CustomerEvent::EmailUpdated {
-                    new_email: "email@example.test".to_string(),
-                },
-            )])
+            .insert_events(&[
+                test_event(
+                    &aggregate_id,
+                    2,
+                    CustomerEvent::EmailUpdated {
+                        new_email: "second@example.test".to_string(),
+                    },
+                ),
+                test_event(
+                    &aggregate_id,
+                    1,
+                    CustomerEvent::NameAdded {
+                        name: "Ferris".to_string(),
+                    },
+                ),
+            ])
             .await
             .unwrap_err();
 
@@ -496,6 +569,12 @@ mod tests {
             MongoAggregateError::OptimisticLock => {}
             _ => panic!("Expected OptimisticLockError, got {result:?}"),
         }
+
+        let events = repository
+            .get_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        assert_eq!(1, events.len());
     }
 
     #[tokio::test]

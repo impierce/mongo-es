@@ -16,3 +16,12 @@ Add the following to your `Cargo.toml`:
 cqrs-es = "0.4.12"
 mongo-es = "0.2.1"
 ```
+
+## Development
+
+All unit tests run against a local MongoDB instance which can be started using the provided `compose.yaml` file. A "standalone" MongoDB instance does not support transactions, so a single-node replica set is configured.
+
+```
+docker compose up -d
+cargo test
+```
