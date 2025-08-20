@@ -403,23 +403,54 @@ impl PersistedEventRepository for MongoEventRepository {
     // https://github.com/serverlesstechnology/postgres-es/blob/main/src/event_repository.rs#L99C5-L100C96
     // TODO: aggregate id is unused here, `stream_events` function needs to be broken up
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        todo!()
+        let filter = doc! { "aggregate_type": A::aggregate_type() };
+        let options = FindOptions::builder().sort(doc! { "sequence": 1 }).build();
+        let cursor = self
+            .get_collection(&self.event_collection)
+            .find(filter)
+            .with_options(options)
+            .await
+            .unwrap();
+        Ok(stream_events(cursor, self.stream_channel_size))
     }
 }
 
-fn stream_events(_base_query: Cursor<Document>, channel_size: usize) -> ReplayStream {
-    let (mut _feed, stream) = ReplayStream::new(channel_size);
+fn stream_events(mut cursor: Cursor<Document>, channel_size: usize) -> ReplayStream {
+    let (mut feed, stream) = ReplayStream::new(channel_size);
+    tokio::spawn(async move {
+        while let Some(result) = cursor.next().await {
+            match result {
+                Ok(document) => {
+                    if let Ok(event) = serialized_event(&document) {
+                        if feed.push(Ok(event)).await.is_err() {
+                            log::warn!("Could not push event to feed. Stopping event stream.");
+                            return;
+                        };
+                    } else {
+                        log::error!("Failed to deserialize event: {:?}", document);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Error while streaming events: {}", e);
+                    let e: MongoAggregateError = e.into();
+                    if feed.push(Err(e.into())).await.is_err() {
+                        log::warn!("Could not push error to feed. Stopping event stream.");
+                        return;
+                    }
+                }
+            }
+        }
+    });
     stream
 }
 
 #[cfg(test)]
 mod tests {
-    use cqrs_es::doc::{Customer, CustomerEvent};
-    use cqrs_es::persist::PersistedEventRepository;
+    use super::*;
 
-    use crate::error::MongoAggregateError;
+    use cqrs_es::doc::{Customer, CustomerEvent};
+
     use crate::utils::tests::{mongodb_client, test_event, test_snapshot_context};
-    use crate::MongoEventRepository;
 
     #[tokio::test]
     async fn test_event_repository_inserts_successfully() {
@@ -575,6 +606,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(1, events.len());
+    }
+
+    #[tokio::test]
+    async fn test_event_repository_replay_stream_aggregate_instance() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(3);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+
+        // Create 10 test events
+        let events: Vec<SerializedEvent> = (1..=10)
+            .map(|i| {
+                test_event(
+                    &aggregate_id,
+                    i,
+                    CustomerEvent::EmailUpdated {
+                        new_email: format!("{i}@example.test").to_string(),
+                    },
+                )
+            })
+            .collect();
+        repository.insert_events(&events).await.unwrap();
+
+        let mut stream = repository
+            .stream_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        let mut num_events = 0;
+        while (stream.next::<Customer>(&None).await).is_some() {
+            num_events += 1;
+        }
+        assert_eq!(10, num_events);
+    }
+
+    #[tokio::test]
+    async fn test_event_repository_replay_stream_all_aggregate_type() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(3);
+        let aggregate_ids: Vec<String> = (0..3).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+
+        clear_collection(repository.get_collection(&repository.event_collection)).await;
+
+        // Create 10 test events for each aggregate instance
+        for aggregate_id in &aggregate_ids {
+            let events: Vec<SerializedEvent> = (1..=10)
+                .map(|i| {
+                    test_event(
+                        &aggregate_id,
+                        i,
+                        CustomerEvent::EmailUpdated {
+                            new_email: format!("{i}@example.test").to_string(),
+                        },
+                    )
+                })
+                .collect();
+            repository.insert_events(&events).await.unwrap();
+        }
+
+        let mut stream = repository.stream_all_events::<Customer>().await.unwrap();
+        let mut num_events = 0;
+        while (stream.next::<Customer>(&None).await).is_some() {
+            num_events += 1;
+        }
+        assert_eq!(30, num_events);
     }
 
     #[tokio::test]
@@ -765,5 +865,10 @@ mod tests {
             )),
             snapshot
         );
+    }
+
+    /// Deletes all documents in the specified collection.
+    async fn clear_collection(collection: Collection<Document>) {
+        collection.delete_many(doc! {}).await.unwrap();
     }
 }
