@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use cqrs_es::persist::{PersistenceError, ViewContext, ViewRepository};
 use cqrs_es::{Aggregate, View};
 use mongodb::bson::{self, doc, Document};
@@ -25,7 +24,6 @@ where
     }
 }
 
-#[async_trait]
 impl<V, A> ViewRepository<V, A> for MongoViewRepository<V, A>
 where
     V: View<A>,
