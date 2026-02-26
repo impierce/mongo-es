@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use cqrs_es::{
     persist::{
         PersistedEventRepository, PersistenceError, ReplayStream, SerializedEvent,
@@ -209,7 +208,7 @@ impl MongoEventRepository {
         let expected_snapshot = current_snapshot - 1;
 
         let snapshot = doc! {
-            "aggregate_type": A::aggregate_type(),
+            "aggregate_type": A::TYPE,
             "aggregate_id": &aggregate_id,
             "payload": bson::to_bson(&aggregate_payload).unwrap(),
             "current_sequence": current_sequence as i64,
@@ -218,7 +217,7 @@ impl MongoEventRepository {
 
         let filter = doc! {
             "aggregate_id": &aggregate_id,
-            "aggregate_type": A::aggregate_type(),
+            "aggregate_type": A::TYPE,
             "current_snapshot": expected_snapshot as i64,
         };
 
@@ -235,7 +234,7 @@ impl MongoEventRepository {
 
         log::debug!(
             "Inserted snapshot for `{}` with id `{}`",
-            A::aggregate_type(),
+            A::TYPE,
             &aggregate_id
         );
 
@@ -302,15 +301,12 @@ fn serialized_event(document: &Document) -> Result<SerializedEvent, MongoAggrega
     })
 }
 
-#[async_trait]
 impl PersistedEventRepository for MongoEventRepository {
     async fn get_events<A: Aggregate>(
         &self,
         aggregate_id: &str,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        let events = self
-            .query_events(&A::aggregate_type(), aggregate_id, 0)
-            .await?;
+        let events = self.query_events(A::TYPE, aggregate_id, 0).await?;
         Ok(events)
     }
 
@@ -320,7 +316,7 @@ impl PersistedEventRepository for MongoEventRepository {
         last_sequence: usize,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
         let events = self
-            .query_events(&A::aggregate_type(), aggregate_id, last_sequence)
+            .query_events(A::TYPE, aggregate_id, last_sequence)
             .await?;
         Ok(events)
     }
@@ -331,7 +327,7 @@ impl PersistedEventRepository for MongoEventRepository {
     ) -> Result<Option<SerializedSnapshot>, PersistenceError> {
         let mut cursor = self
             .query_collection(
-                &A::aggregate_type(),
+                A::TYPE,
                 aggregate_id,
                 &self.snapshot_collection,
                 0,
@@ -344,7 +340,7 @@ impl PersistedEventRepository for MongoEventRepository {
             let payload = bson::from_bson(document.get("payload").unwrap().clone()).unwrap();
             log::debug!(
                 "Found snapshot for `{}` with id `{}`",
-                A::aggregate_type(),
+                A::TYPE,
                 aggregate_id
             );
             Ok(Some(SerializedSnapshot {
@@ -389,19 +385,13 @@ impl PersistedEventRepository for MongoEventRepository {
         aggregate_id: &str,
     ) -> Result<ReplayStream, PersistenceError> {
         let query = self
-            .query_collection(
-                &A::aggregate_type(),
-                aggregate_id,
-                &self.event_collection,
-                0,
-                None,
-            )
+            .query_collection(A::TYPE, aggregate_id, &self.event_collection, 0, None)
             .await?;
         Ok(stream_events(query, self.stream_channel_size))
     }
 
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        let filter = doc! { "aggregate_type": A::aggregate_type() };
+        let filter = doc! { "aggregate_type": A::TYPE };
         let options = FindOptions::builder().sort(doc! { "sequence": 1 }).build();
         let cursor = self
             .get_collection(&self.event_collection)
@@ -634,7 +624,7 @@ mod tests {
             .await
             .unwrap();
         let mut num_events = 0;
-        while (stream.next::<Customer>(&None).await).is_some() {
+        while (stream.next::<Customer>(&[]).await).is_some() {
             num_events += 1;
         }
         assert_eq!(10, num_events);
@@ -656,7 +646,7 @@ mod tests {
             let events: Vec<SerializedEvent> = (1..=10)
                 .map(|i| {
                     test_event(
-                        &aggregate_id,
+                        aggregate_id,
                         i,
                         CustomerEvent::EmailUpdated {
                             new_email: format!("{i}@example.test").to_string(),
@@ -669,7 +659,7 @@ mod tests {
 
         let mut stream = repository.stream_all_events::<Customer>().await.unwrap();
         let mut num_events = 0;
-        while (stream.next::<Customer>(&None).await).is_some() {
+        while (stream.next::<Customer>(&[]).await).is_some() {
             num_events += 1;
         }
         assert_eq!(30, num_events);
@@ -706,6 +696,7 @@ mod tests {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
                     email: "email@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 aggregate_id.clone(),
@@ -727,6 +718,7 @@ mod tests {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
                     email: "email@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 0,
@@ -752,6 +744,7 @@ mod tests {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
                     email: "first@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 aggregate_id.clone(),
@@ -768,6 +761,7 @@ mod tests {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
                     email: "second@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 aggregate_id.clone(),
@@ -788,7 +782,8 @@ mod tests {
                 serde_json::to_value(Customer {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
-                    email: "second@example.test".to_string()
+                    email: "second@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 0,
@@ -814,6 +809,7 @@ mod tests {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
                     email: "first@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 aggregate_id.clone(),
@@ -830,6 +826,7 @@ mod tests {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
                     email: "second@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 aggregate_id.clone(),
@@ -855,7 +852,8 @@ mod tests {
                 serde_json::to_value(Customer {
                     customer_id: "123".to_string(),
                     name: "Ferris".to_string(),
-                    email: "first@example.test".to_string()
+                    email: "first@example.test".to_string(),
+                    data_populated: true,
                 })
                 .unwrap(),
                 0,
