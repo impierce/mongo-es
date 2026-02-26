@@ -306,7 +306,7 @@ impl PersistedEventRepository for MongoEventRepository {
         &self,
         aggregate_id: &str,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        let events = self.query_events(&A::TYPE, aggregate_id, 0).await?;
+        let events = self.query_events(A::TYPE, aggregate_id, 0).await?;
         Ok(events)
     }
 
@@ -316,7 +316,7 @@ impl PersistedEventRepository for MongoEventRepository {
         last_sequence: usize,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
         let events = self
-            .query_events(&A::TYPE, aggregate_id, last_sequence)
+            .query_events(A::TYPE, aggregate_id, last_sequence)
             .await?;
         Ok(events)
     }
@@ -327,7 +327,7 @@ impl PersistedEventRepository for MongoEventRepository {
     ) -> Result<Option<SerializedSnapshot>, PersistenceError> {
         let mut cursor = self
             .query_collection(
-                &A::TYPE,
+                A::TYPE,
                 aggregate_id,
                 &self.snapshot_collection,
                 0,
@@ -385,7 +385,7 @@ impl PersistedEventRepository for MongoEventRepository {
         aggregate_id: &str,
     ) -> Result<ReplayStream, PersistenceError> {
         let query = self
-            .query_collection(&A::TYPE, aggregate_id, &self.event_collection, 0, None)
+            .query_collection(A::TYPE, aggregate_id, &self.event_collection, 0, None)
             .await?;
         Ok(stream_events(query, self.stream_channel_size))
     }
@@ -646,7 +646,7 @@ mod tests {
             let events: Vec<SerializedEvent> = (1..=10)
                 .map(|i| {
                     test_event(
-                        &aggregate_id,
+                        aggregate_id,
                         i,
                         CustomerEvent::EmailUpdated {
                             new_email: format!("{i}@example.test").to_string(),
