@@ -84,7 +84,7 @@ where
         log::debug!(
             "Modified {} documents in `{}` collection",
             res.modified_count,
-            &self.view_name
+            self.view_name
         );
 
         Ok(())

@@ -235,7 +235,7 @@ impl MongoEventRepository {
         log::debug!(
             "Inserted snapshot for `{}` with id `{}`",
             A::TYPE,
-            &aggregate_id
+            aggregate_id
         );
 
         Ok(())
