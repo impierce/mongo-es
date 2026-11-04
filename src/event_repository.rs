@@ -182,7 +182,7 @@ impl MongoEventRepository {
                 aggregate_id,
                 &self.event_collection,
                 min_sequence as i64,
-                None,
+                Some(by_sequence()),
             )
             .await?;
         let mut events: Vec<SerializedEvent> = Default::default();
@@ -279,6 +279,12 @@ impl MongoEventRepository {
             }
         }
     }
+}
+
+/// Sort order for the events of one aggregate. MongoDB returns documents in an unspecified order
+/// unless a sort is given, and events must be applied in sequence.
+fn by_sequence() -> Document {
+    doc! { "sequence": 1 }
 }
 
 fn serialized_event(document: &Document) -> Result<SerializedEvent, MongoAggregateError> {
@@ -385,7 +391,13 @@ impl PersistedEventRepository for MongoEventRepository {
         aggregate_id: &str,
     ) -> Result<ReplayStream, PersistenceError> {
         let query = self
-            .query_collection(A::TYPE, aggregate_id, &self.event_collection, 0, None)
+            .query_collection(
+                A::TYPE,
+                aggregate_id,
+                &self.event_collection,
+                0,
+                Some(by_sequence()),
+            )
             .await?;
         Ok(stream_events(query, self.stream_channel_size))
     }
@@ -487,6 +499,45 @@ mod tests {
         events
             .iter()
             .for_each(|e| assert_eq!(&aggregate_id, &e.aggregate_id));
+    }
+
+    #[tokio::test]
+    async fn events_are_returned_in_sequence_order() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+        let event = |sequence| {
+            test_event(
+                &aggregate_id,
+                sequence,
+                CustomerEvent::NameAdded {
+                    name: format!("Ferris {sequence}"),
+                },
+            )
+        };
+        for sequence in [3, 1, 2] {
+            repository.insert_events(&[event(sequence)]).await.unwrap();
+        }
+
+        let events = repository
+            .get_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        let sequences: Vec<_> = events.iter().map(|event| event.sequence).collect();
+        assert_eq!(sequences, vec![1, 2, 3]);
+
+        let mut stream = repository
+            .stream_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        let mut sequences = Vec::new();
+        while let Some(event) = stream.next::<Customer>(&[]).await {
+            sequences.push(event.unwrap().sequence);
+        }
+        assert_eq!(sequences, vec![1, 2, 3]);
     }
 
     #[tokio::test]
