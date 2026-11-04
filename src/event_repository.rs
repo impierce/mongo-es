@@ -408,16 +408,21 @@ fn stream_events(mut cursor: Cursor<Document>, channel_size: usize) -> ReplayStr
     tokio::spawn(async move {
         while let Some(result) = cursor.next().await {
             match result {
-                Ok(document) => {
-                    if let Ok(event) = serialized_event(&document) {
+                Ok(document) => match serialized_event(&document) {
+                    Ok(event) => {
                         if feed.push(Ok(event)).await.is_err() {
                             log::warn!("Could not push event to feed. Stopping event stream.");
                             return;
                         };
-                    } else {
-                        log::error!("Failed to deserialize event: {:?}", document);
                     }
-                }
+                    // Reported like `get_events` does, instead of skipped: a consumer applying the
+                    // stream to an aggregate would otherwise silently miss an event.
+                    Err(e) => {
+                        log::error!("Failed to deserialize event: {:?}", document);
+                        let _ = feed.push(Err(e.into())).await;
+                        return;
+                    }
+                },
                 Err(e) => {
                     log::error!("Error while streaming events: {}", e);
                     let e: MongoAggregateError = e.into();
@@ -482,6 +487,57 @@ mod tests {
         events
             .iter()
             .for_each(|e| assert_eq!(&aggregate_id, &e.aggregate_id));
+    }
+
+    #[tokio::test]
+    async fn streams_report_events_that_fail_to_deserialize() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1)
+            // The broken event would otherwise end streams over all events of other tests.
+            .with_collection_names("undeserializable_events", "undeserializable_snapshots");
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+        repository
+            .insert_events(&[test_event(
+                &aggregate_id,
+                1,
+                CustomerEvent::NameAdded {
+                    name: "Ferris".to_string(),
+                },
+            )])
+            .await
+            .unwrap();
+        // Lacks `event_type`.
+        repository
+            .get_collection(&repository.event_collection)
+            .insert_one(doc! {
+                "aggregate_id": &aggregate_id,
+                "aggregate_type": Customer::TYPE,
+                "sequence": 2_i64,
+                "event_version": "1.0",
+                "payload": {},
+                "metadata": {},
+            })
+            .await
+            .unwrap();
+
+        let mut stream = repository
+            .stream_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            stream
+                .next::<Customer>(&[])
+                .await
+                .unwrap()
+                .unwrap()
+                .sequence,
+            1
+        );
+        assert!(matches!(stream.next::<Customer>(&[]).await, Some(Err(_))));
+        assert!(stream.next::<Customer>(&[]).await.is_none());
     }
 
     #[tokio::test]
