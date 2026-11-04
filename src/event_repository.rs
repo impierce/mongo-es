@@ -19,7 +19,10 @@ use crate::error::MongoAggregateError;
 const DEFAULT_EVENT_COLLECTION: &str = "events";
 const DEFAULT_SNAPSHOT_COLLECTION: &str = "snapshots";
 
-const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 200;
+/// Events buffered ahead of the consumer of a stream. Every buffered event is held with its full
+/// payload, so a large buffer holds a lot of memory for aggregates with large events, while a
+/// consumer applying events gains little from reading further ahead.
+const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 16;
 
 /// An event repository using MongoDB for persistence.
 pub struct MongoEventRepository {
@@ -59,7 +62,7 @@ impl MongoEventRepository {
 
     /// Configures a `MongoEventRepository` to use a custom streaming channel size.
     ///
-    /// Default: `200`
+    /// Default: `16`
     pub fn with_streaming_channel_size(self, stream_channel_size: usize) -> Self {
         Self {
             client: self.client,
