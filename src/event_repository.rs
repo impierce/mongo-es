@@ -72,6 +72,12 @@ impl MongoEventRepository {
         }
     }
 
+    /// Documents fetched per cursor batch while streaming. Without a limit, MongoDB fills a batch
+    /// with up to 16 MB of documents, which the cursor holds however few events the stream buffers.
+    fn stream_batch_size(&self) -> u32 {
+        u32::try_from(self.stream_channel_size).unwrap_or(u32::MAX)
+    }
+
     // helper: get collection by name from default database
     fn get_collection(&self, name: &str) -> Collection<Document> {
         self.client
@@ -186,6 +192,7 @@ impl MongoEventRepository {
                 &self.event_collection,
                 min_sequence as i64,
                 Some(by_sequence()),
+                None,
             )
             .await?;
         let mut events: Vec<SerializedEvent> = Default::default();
@@ -252,9 +259,13 @@ impl MongoEventRepository {
         collection: &str,
         min_sequence: i64,
         sort: Option<Document>,
+        batch_size: Option<u32>,
     ) -> Result<Cursor<Document>, MongoAggregateError> {
         let filter = self.build_filter(aggregate_type, aggregate_id, min_sequence);
-        let options = FindOptions::builder().sort(sort).build();
+        let options = FindOptions::builder()
+            .sort(sort)
+            .batch_size(batch_size)
+            .build();
         let cursor = self
             .get_collection(collection)
             .find(filter)
@@ -341,6 +352,7 @@ impl PersistedEventRepository for MongoEventRepository {
                 &self.snapshot_collection,
                 0,
                 Some(doc! { "current_snapshot": -1 }), // sort descending
+                None,
             )
             .await?;
 
@@ -400,6 +412,7 @@ impl PersistedEventRepository for MongoEventRepository {
                 &self.event_collection,
                 0,
                 Some(by_sequence()),
+                Some(self.stream_batch_size()),
             )
             .await?;
         Ok(stream_events(query, self.stream_channel_size))
@@ -407,7 +420,10 @@ impl PersistedEventRepository for MongoEventRepository {
 
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
         let filter = doc! { "aggregate_type": A::TYPE };
-        let options = FindOptions::builder().sort(doc! { "sequence": 1 }).build();
+        let options = FindOptions::builder()
+            .sort(doc! { "sequence": 1 })
+            .batch_size(self.stream_batch_size())
+            .build();
         let cursor = self
             .get_collection(&self.event_collection)
             .find(filter)
