@@ -30,6 +30,7 @@ pub struct MongoEventRepository {
     event_collection: String,
     snapshot_collection: String,
     stream_channel_size: usize,
+    stream_batch_size: Option<u32>,
 }
 
 impl MongoEventRepository {
@@ -40,6 +41,7 @@ impl MongoEventRepository {
             event_collection: DEFAULT_EVENT_COLLECTION.to_string(),
             snapshot_collection: DEFAULT_SNAPSHOT_COLLECTION.to_string(),
             stream_channel_size: DEFAULT_STREAMING_CHANNEL_SIZE,
+            stream_batch_size: None,
         };
         // TODO: is this the right place to create indexes?
         repository.create_indexes().await?;
@@ -53,10 +55,9 @@ impl MongoEventRepository {
     /// - `snapshot_collection`: "snapshots"
     pub fn with_collection_names(self, event_collection: &str, snapshot_collection: &str) -> Self {
         Self {
-            client: self.client,
             event_collection: event_collection.to_string(),
             snapshot_collection: snapshot_collection.to_string(),
-            stream_channel_size: self.stream_channel_size,
+            ..self
         }
     }
 
@@ -65,17 +66,24 @@ impl MongoEventRepository {
     /// Default: `16`
     pub fn with_streaming_channel_size(self, stream_channel_size: usize) -> Self {
         Self {
-            client: self.client,
-            event_collection: self.event_collection,
-            snapshot_collection: self.snapshot_collection,
             stream_channel_size,
+            ..self
         }
     }
 
-    /// Documents fetched per cursor batch while streaming. Without a limit, MongoDB fills a batch
-    /// with up to 16 MB of documents, which the cursor holds however few events the stream buffers.
-    fn stream_batch_size(&self) -> u32 {
-        u32::try_from(self.stream_channel_size).unwrap_or(u32::MAX)
+    /// Configures a `MongoEventRepository` to fetch at most `stream_batch_size` documents per cursor
+    /// batch while streaming events.
+    ///
+    /// Without a limit, MongoDB fills each batch after the first with up to 16 MB of documents,
+    /// which the cursor holds in addition to the events buffered in the stream. A limit bounds that
+    /// memory for large events, at the cost of a round trip per batch.
+    ///
+    /// Default: unset (MongoDB's default)
+    pub fn with_stream_batch_size(self, stream_batch_size: u32) -> Self {
+        Self {
+            stream_batch_size: Some(stream_batch_size),
+            ..self
+        }
     }
 
     // helper: get collection by name from default database
@@ -412,7 +420,7 @@ impl PersistedEventRepository for MongoEventRepository {
                 &self.event_collection,
                 0,
                 Some(by_sequence()),
-                Some(self.stream_batch_size()),
+                self.stream_batch_size,
             )
             .await?;
         Ok(stream_events(query, self.stream_channel_size))
@@ -422,7 +430,7 @@ impl PersistedEventRepository for MongoEventRepository {
         let filter = doc! { "aggregate_type": A::TYPE };
         let options = FindOptions::builder()
             .sort(doc! { "sequence": 1 })
-            .batch_size(self.stream_batch_size())
+            .batch_size(self.stream_batch_size)
             .build();
         let cursor = self
             .get_collection(&self.event_collection)
@@ -754,6 +762,39 @@ mod tests {
             num_events += 1;
         }
         assert_eq!(10, num_events);
+    }
+
+    #[tokio::test]
+    async fn streams_with_a_batch_size_return_all_events_in_order() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1)
+            .with_stream_batch_size(2);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+        let events: Vec<SerializedEvent> = (1..=5)
+            .map(|i| {
+                test_event(
+                    &aggregate_id,
+                    i,
+                    CustomerEvent::EmailUpdated {
+                        new_email: format!("{i}@example.test"),
+                    },
+                )
+            })
+            .collect();
+        repository.insert_events(&events).await.unwrap();
+
+        let mut stream = repository
+            .stream_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        let mut sequences = Vec::new();
+        while let Some(event) = stream.next::<Customer>(&[]).await {
+            sequences.push(event.unwrap().sequence);
+        }
+        assert_eq!(vec![1, 2, 3, 4, 5], sequences);
     }
 
     #[tokio::test]
