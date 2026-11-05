@@ -639,8 +639,6 @@ mod tests {
             .with_streaming_channel_size(3);
         let aggregate_ids: Vec<String> = (0..3).map(|_| uuid::Uuid::new_v4().to_string()).collect();
 
-        clear_collection(repository.get_collection(&repository.event_collection)).await;
-
         // Create 10 test events for each aggregate instance
         for aggregate_id in &aggregate_ids {
             let events: Vec<SerializedEvent> = (1..=10)
@@ -657,10 +655,14 @@ mod tests {
             repository.insert_events(&events).await.unwrap();
         }
 
+        // Other tests write `Customer` events to the same collection concurrently, so only this
+        // test's aggregates are counted.
         let mut stream = repository.stream_all_events::<Customer>().await.unwrap();
         let mut num_events = 0;
-        while (stream.next::<Customer>(&[]).await).is_some() {
-            num_events += 1;
+        while let Some(event) = stream.next::<Customer>(&[]).await {
+            if event.is_ok_and(|event| aggregate_ids.contains(&event.aggregate_id)) {
+                num_events += 1;
+            }
         }
         assert_eq!(30, num_events);
     }
@@ -861,10 +863,5 @@ mod tests {
             )),
             snapshot
         );
-    }
-
-    /// Deletes all documents in the specified collection.
-    async fn clear_collection(collection: Collection<Document>) {
-        collection.delete_many(doc! {}).await.unwrap();
     }
 }

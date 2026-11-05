@@ -47,7 +47,7 @@ pub(crate) mod tests {
             event_type: event.event_type().to_string(),
             event_version: "1".to_string(),
             payload,
-            metadata: Default::default(),
+            metadata: serde_json::json!({}),
         }
     }
 
