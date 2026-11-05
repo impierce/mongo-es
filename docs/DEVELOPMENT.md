@@ -21,10 +21,12 @@ Pull requests are squash-merged, so the **pull request title** becomes the commi
 It must follow [Conventional Commits](https://www.conventionalcommits.org/), which CI checks:
 
 - `fix: order events by sequence`
-- `` feat: add `with_batch_size` option ``
+- `` feat: add `with_stream_batch_size` option ``
 - `` feat!: rename `MongoEventRepository::new` `` (breaking change)
 
 The title also determines the next version number and the changelog entry, so describe the change from a user's point of view.
+Write it in terse commit style: drop articles (_the_, _a_, _an_) and wrap code literals in backticks, as in `` feat: add `with_stream_batch_size` option to `MongoEventRepository` ``.
+Write `fix: report stream errors to caller`, not `fix: report the stream errors to the caller`.
 
 A change that breaks the public API needs `!` in the title (`feat!:`, `fix!:`): before 1.0 it bumps the minor version, and the changelog lists it as breaking.
 CI's `SemVer` job runs [`cargo-semver-checks`](https://github.com/obi1kenobi/cargo-semver-checks) on the public API, with all features, against the pull request's base, unless the title already has the `!`, and fails when it finds a breaking change.
