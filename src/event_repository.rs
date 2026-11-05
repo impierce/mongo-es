@@ -19,7 +19,10 @@ use crate::error::MongoAggregateError;
 const DEFAULT_EVENT_COLLECTION: &str = "events";
 const DEFAULT_SNAPSHOT_COLLECTION: &str = "snapshots";
 
-const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 200;
+/// Events buffered ahead of the consumer of a stream. Every buffered event is held with its full
+/// payload, so a large buffer holds a lot of memory for aggregates with large events, while a
+/// consumer applying events gains little from reading further ahead.
+const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 16;
 
 /// An event repository using MongoDB for persistence.
 pub struct MongoEventRepository {
@@ -59,7 +62,7 @@ impl MongoEventRepository {
 
     /// Configures a `MongoEventRepository` to use a custom streaming channel size.
     ///
-    /// Default: `200`
+    /// Default: `16`
     pub fn with_streaming_channel_size(self, stream_channel_size: usize) -> Self {
         Self {
             client: self.client,
@@ -67,6 +70,12 @@ impl MongoEventRepository {
             snapshot_collection: self.snapshot_collection,
             stream_channel_size,
         }
+    }
+
+    /// Documents fetched per cursor batch while streaming. Without a limit, MongoDB fills a batch
+    /// with up to 16 MB of documents, which the cursor holds however few events the stream buffers.
+    fn stream_batch_size(&self) -> u32 {
+        u32::try_from(self.stream_channel_size).unwrap_or(u32::MAX)
     }
 
     // helper: get collection by name from default database
@@ -182,6 +191,7 @@ impl MongoEventRepository {
                 aggregate_id,
                 &self.event_collection,
                 min_sequence as i64,
+                Some(by_sequence()),
                 None,
             )
             .await?;
@@ -249,9 +259,13 @@ impl MongoEventRepository {
         collection: &str,
         min_sequence: i64,
         sort: Option<Document>,
+        batch_size: Option<u32>,
     ) -> Result<Cursor<Document>, MongoAggregateError> {
         let filter = self.build_filter(aggregate_type, aggregate_id, min_sequence);
-        let options = FindOptions::builder().sort(sort).build();
+        let options = FindOptions::builder()
+            .sort(sort)
+            .batch_size(batch_size)
+            .build();
         let cursor = self
             .get_collection(collection)
             .find(filter)
@@ -279,6 +293,12 @@ impl MongoEventRepository {
             }
         }
     }
+}
+
+/// Sort order for the events of one aggregate. MongoDB returns documents in an unspecified order
+/// unless a sort is given, and events must be applied in sequence.
+fn by_sequence() -> Document {
+    doc! { "sequence": 1 }
 }
 
 fn serialized_event(document: &Document) -> Result<SerializedEvent, MongoAggregateError> {
@@ -332,6 +352,7 @@ impl PersistedEventRepository for MongoEventRepository {
                 &self.snapshot_collection,
                 0,
                 Some(doc! { "current_snapshot": -1 }), // sort descending
+                None,
             )
             .await?;
 
@@ -385,14 +406,24 @@ impl PersistedEventRepository for MongoEventRepository {
         aggregate_id: &str,
     ) -> Result<ReplayStream, PersistenceError> {
         let query = self
-            .query_collection(A::TYPE, aggregate_id, &self.event_collection, 0, None)
+            .query_collection(
+                A::TYPE,
+                aggregate_id,
+                &self.event_collection,
+                0,
+                Some(by_sequence()),
+                Some(self.stream_batch_size()),
+            )
             .await?;
         Ok(stream_events(query, self.stream_channel_size))
     }
 
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
         let filter = doc! { "aggregate_type": A::TYPE };
-        let options = FindOptions::builder().sort(doc! { "sequence": 1 }).build();
+        let options = FindOptions::builder()
+            .sort(doc! { "sequence": 1 })
+            .batch_size(self.stream_batch_size())
+            .build();
         let cursor = self
             .get_collection(&self.event_collection)
             .find(filter)
@@ -408,16 +439,21 @@ fn stream_events(mut cursor: Cursor<Document>, channel_size: usize) -> ReplayStr
     tokio::spawn(async move {
         while let Some(result) = cursor.next().await {
             match result {
-                Ok(document) => {
-                    if let Ok(event) = serialized_event(&document) {
+                Ok(document) => match serialized_event(&document) {
+                    Ok(event) => {
                         if feed.push(Ok(event)).await.is_err() {
                             log::warn!("Could not push event to feed. Stopping event stream.");
                             return;
                         };
-                    } else {
-                        log::error!("Failed to deserialize event: {:?}", document);
                     }
-                }
+                    // Reported like `get_events` does, instead of skipped: a consumer applying the
+                    // stream to an aggregate would otherwise silently miss an event.
+                    Err(e) => {
+                        log::error!("Failed to deserialize event: {:?}", document);
+                        let _ = feed.push(Err(e.into())).await;
+                        return;
+                    }
+                },
                 Err(e) => {
                     log::error!("Error while streaming events: {}", e);
                     let e: MongoAggregateError = e.into();
@@ -482,6 +518,96 @@ mod tests {
         events
             .iter()
             .for_each(|e| assert_eq!(&aggregate_id, &e.aggregate_id));
+    }
+
+    #[tokio::test]
+    async fn events_are_returned_in_sequence_order() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1);
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+        let event = |sequence| {
+            test_event(
+                &aggregate_id,
+                sequence,
+                CustomerEvent::NameAdded {
+                    name: format!("Ferris {sequence}"),
+                },
+            )
+        };
+        for sequence in [3, 1, 2] {
+            repository.insert_events(&[event(sequence)]).await.unwrap();
+        }
+
+        let events = repository
+            .get_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        let sequences: Vec<_> = events.iter().map(|event| event.sequence).collect();
+        assert_eq!(sequences, vec![1, 2, 3]);
+
+        let mut stream = repository
+            .stream_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        let mut sequences = Vec::new();
+        while let Some(event) = stream.next::<Customer>(&[]).await {
+            sequences.push(event.unwrap().sequence);
+        }
+        assert_eq!(sequences, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn streams_report_events_that_fail_to_deserialize() {
+        let client = mongodb_client().await;
+        let repository = MongoEventRepository::new(client)
+            .await
+            .unwrap()
+            .with_streaming_channel_size(1)
+            // The broken event would otherwise end streams over all events of other tests.
+            .with_collection_names("undeserializable_events", "undeserializable_snapshots");
+        let aggregate_id = uuid::Uuid::new_v4().to_string();
+        repository
+            .insert_events(&[test_event(
+                &aggregate_id,
+                1,
+                CustomerEvent::NameAdded {
+                    name: "Ferris".to_string(),
+                },
+            )])
+            .await
+            .unwrap();
+        // Lacks `event_type`.
+        repository
+            .get_collection(&repository.event_collection)
+            .insert_one(doc! {
+                "aggregate_id": &aggregate_id,
+                "aggregate_type": Customer::TYPE,
+                "sequence": 2_i64,
+                "event_version": "1.0",
+                "payload": {},
+                "metadata": {},
+            })
+            .await
+            .unwrap();
+
+        let mut stream = repository
+            .stream_events::<Customer>(&aggregate_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            stream
+                .next::<Customer>(&[])
+                .await
+                .unwrap()
+                .unwrap()
+                .sequence,
+            1
+        );
+        assert!(matches!(stream.next::<Customer>(&[]).await, Some(Err(_))));
+        assert!(stream.next::<Customer>(&[]).await.is_none());
     }
 
     #[tokio::test]
