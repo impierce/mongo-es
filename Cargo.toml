@@ -1,6 +1,6 @@
 [package]
 name = "mongo-es"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["daniel-mader"]
 description = "A MongoDB implementation of the cqrs-es event store."
 edition = "2021"
