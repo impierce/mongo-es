@@ -10,12 +10,10 @@ A MongoDB implementation of the `PersistedEventRepository` trait in [cqrs-es](ht
 
 ## Usage
 
-Add the following to your `Cargo.toml`:
+Add it to a project, together with the `cqrs-es` version it implements:
 
-```toml
-[dependencies]
-cqrs-es = "0.5.0"
-mongo-es = "0.4.2"
+```sh
+cargo add cqrs-es@0.5 mongo-es
 ```
 
 It is recommended to follow the [official documentation](https://doc.rust-cqrs.org) to build your CQRS application.
@@ -23,3 +21,5 @@ It is recommended to follow the [official documentation](https://doc.rust-cqrs.o
 ### Useful Links
 
 - [Development](docs/DEVELOPMENT.md)
+- [Release process](docs/RELEASE.md)
+- [Changelog](CHANGELOG.md)
