@@ -5,15 +5,15 @@ use cqrs_es::persist::PersistedEventStore;
 use cqrs_es::EventStore;
 use mongo_es::{default_mongo_client, MongoEventRepository};
 
-use testcontainers_modules::{mongo, testcontainers::runners::AsyncRunner};
+use testcontainers_modules::testcontainers::{
+    core::{ExecCommand, IntoContainerPort, WaitFor},
+    runners::AsyncRunner,
+    ContainerAsync, GenericImage, ImageExt,
+};
 
 #[tokio::test]
 async fn test_event_store() {
-    let container = mongo::Mongo::repl_set().start().await.unwrap();
-    let host_ip = container.get_host().await.unwrap();
-    let host_port = container.get_host_port_ipv4(27017).await.unwrap();
-
-    let connection_string = format!("mongodb://{host_ip}:{host_port}/test?directConnection=true");
+    let (_container, connection_string) = mongodb().await;
     let client = default_mongo_client(&connection_string).await;
 
     let repository = MongoEventRepository::new(client).await.unwrap();
@@ -25,11 +25,7 @@ async fn test_event_store() {
 
 #[tokio::test]
 async fn test_aggregate_store() {
-    let container = mongo::Mongo::repl_set().start().await.unwrap();
-    let host_ip = container.get_host().await.unwrap();
-    let host_port = container.get_host_port_ipv4(27017).await.unwrap();
-
-    let connection_string = format!("mongodb://{host_ip}:{host_port}/test?directConnection=true");
+    let (_container, connection_string) = mongodb().await;
     let client = default_mongo_client(&connection_string).await;
 
     let repository = MongoEventRepository::new(client).await.unwrap();
@@ -41,11 +37,7 @@ async fn test_aggregate_store() {
 
 #[tokio::test]
 async fn test_snapshot_store() {
-    let container = mongo::Mongo::repl_set().start().await.unwrap();
-    let host_ip = container.get_host().await.unwrap();
-    let host_port = container.get_host_port_ipv4(27017).await.unwrap();
-
-    let connection_string = format!("mongodb://{host_ip}:{host_port}/test?directConnection=true");
+    let (_container, connection_string) = mongodb().await;
     let client = default_mongo_client(&connection_string).await;
 
     let repository = MongoEventRepository::new(client).await.unwrap();
@@ -53,6 +45,37 @@ async fn test_snapshot_store() {
         PersistedEventStore::<MongoEventRepository, Customer>::new_snapshot_store(repository, 3);
 
     commit_and_load(&snapshot_store).await;
+}
+
+/// Starts MongoDB as a single-node replica set and returns its connection string.
+///
+/// `testcontainers_modules::mongo::Mongo::repl_set` waits for log messages that MongoDB 8 and newer no longer emit.
+async fn mongodb() -> (ContainerAsync<GenericImage>, String) {
+    let container = GenericImage::new("mongo", "9")
+        .with_exposed_port(27017.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("Waiting for connections"))
+        .with_cmd(["--replSet", "rs0"])
+        .start()
+        .await
+        .unwrap();
+    container
+        .exec(
+            ExecCommand::new(["mongosh", "--quiet", "--eval", "rs.initiate()"])
+                .with_container_ready_conditions(vec![WaitFor::message_on_stdout(
+                    "Transition to primary complete",
+                )]),
+        )
+        .await
+        .unwrap();
+
+    // The replica set advertises its member under the container's internal hostname, so connect directly.
+    let connection_string = format!(
+        "mongodb://{}:{}/test?directConnection=true",
+        container.get_host().await.unwrap(),
+        container.get_host_port_ipv4(27017).await.unwrap()
+    );
+
+    (container, connection_string)
 }
 
 async fn commit_and_load(store: &PersistedEventStore<MongoEventRepository, Customer>) {

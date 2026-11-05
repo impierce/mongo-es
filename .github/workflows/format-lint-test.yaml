@@ -26,7 +26,7 @@ jobs:
       - name: Start MongoDB replica set
         uses: supercharge/mongodb-github-action@1.12.1
         with:
-          mongodb-version: 8
+          mongodb-version: 9
           mongodb-replica-set: rs0
 
       - name: Test
