@@ -15,7 +15,7 @@ Add the following to your `Cargo.toml`:
 ```toml
 [dependencies]
 cqrs-es = "0.5.0"
-mongo-es = "0.4.1"
+mongo-es = "0.4.2"
 ```
 
 It is recommended to follow the [official documentation](https://doc.rust-cqrs.org) to build your CQRS application.
